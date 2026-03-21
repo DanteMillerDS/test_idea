@@ -147,7 +147,10 @@ def create_group_for_app(app_name, app_path=None, bundle_id='Unknown', executabl
         'installed': installed,
         'focus': {
             'is_frontmost': False,
-            'window_title': '',
+            'priority_rank': None,
+            'window_count': 0,
+            'primary_window_title': '',
+            'window_titles': [],
         },
         'processes': [],
         'process_count': 0,
@@ -204,25 +207,41 @@ def get_process_group(process, matched_app, grouped_apps):
     return grouped_apps[group_key]
 
 
-def finalize_group_metadata(grouped_apps, frontmost_app):
+def build_focus_index(focus_entries):
+    focus_index = {}
+
+    for entry in focus_entries:
+        normalized_name = normalize_name(entry['app_name'])
+        if not normalized_name:
+            continue
+        focus_index[normalized_name] = entry
+
+    return focus_index
+
+
+def finalize_group_metadata(grouped_apps, focus_entries):
+    focus_index = build_focus_index(focus_entries)
+
     for group in grouped_apps.values():
         group['processes'].sort(key=lambda process: (process['name'].lower(), process['pid']))
         group['process_count'] = len(group['processes'])
-        matches_frontmost = (
-            normalize_name(group['name']) == frontmost_app['normalized_name']
-            or normalize_name(group['bundle_id']) == frontmost_app['normalized_bundle_id']
-            or normalize_name(group['executable']) == frontmost_app['normalized_name']
+        focus_entry = (
+            focus_index.get(normalize_name(group['name']))
+            or focus_index.get(normalize_name(group['executable']))
         )
-        if matches_frontmost:
+        if focus_entry:
             group['focus'] = {
-                'is_frontmost': True,
-                'window_title': frontmost_app.get('window_title', ''),
+                'is_frontmost': focus_entry['is_frontmost'],
+                'priority_rank': focus_entry['priority_rank'],
+                'window_count': focus_entry['window_count'],
+                'primary_window_title': focus_entry['primary_window_title'],
+                'window_titles': focus_entry['window_titles'],
             }
 
 
 def infer_zoom_activity(app_group):
     signals = []
-    window_title = app_group['focus'].get('window_title', '').lower()
+    window_title = app_group['focus'].get('primary_window_title', '').lower()
     process_names = {normalize_name(process['name']) for process in app_group['processes']}
     cmdlines = ' '.join(' '.join(process['cmdline']) for process in app_group['processes']).lower()
 
@@ -284,7 +303,8 @@ def infer_action_map(grouped_apps):
     return sorted(
         grouped_apps.values(),
         key=lambda group: (
-            not group['focus']['is_frontmost'],
+            group['focus']['priority_rank'] is None,
+            group['focus']['priority_rank'] or 9999,
             group['activity']['state'] not in {'in_call', 'focused'},
             not group['installed'],
             -group['process_count'],
@@ -293,7 +313,7 @@ def infer_action_map(grouped_apps):
     )
 
 
-def group_processes_by_application(processes, applications, frontmost_app):
+def group_processes_by_application(processes, applications, focus_entries):
     application_index = build_application_index(applications)
     grouped_apps = build_initial_groups(applications)
 
@@ -302,5 +322,5 @@ def group_processes_by_application(processes, applications, frontmost_app):
         group = get_process_group(process, matched_app, grouped_apps)
         group['processes'].append(process)
 
-    finalize_group_metadata(grouped_apps, frontmost_app)
+    finalize_group_metadata(grouped_apps, focus_entries)
     return grouped_apps
